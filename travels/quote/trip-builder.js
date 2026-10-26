@@ -75,6 +75,152 @@
   var MAP = { lon0: 79.55, lat0: 9.95, k: 190, w: 470, h: 790 };
   function xy(lat, lon) { return [Math.round((lon - MAP.lon0) * MAP.k + 12), Math.round((MAP.lat0 - lat) * MAP.k + 12)]; }
 
+  // ---------- photos (Wikipedia / Wikimedia Commons lead images, credited) ----------
+  var PHOTO = {}, photoWait = {}, PKEY = KEY + "-photos";
+  try { PHOTO = JSON.parse(localStorage.getItem(PKEY) || "{}") || {}; } catch (e) {}
+  function bigger(src, orig) {
+    if (orig && orig.width && orig.width <= 1400) return orig.source;
+    return /\/\d+px-/.test(src) ? src.replace(/\/\d+px-/, "/900px-") : src;
+  }
+  function photo(title, cb) {
+    if (!title) { cb(null); return; }
+    if (Object.prototype.hasOwnProperty.call(PHOTO, title)) { cb(PHOTO[title]); return; }
+    if (photoWait[title]) { photoWait[title].push(cb); return; }
+    photoWait[title] = [cb];
+    var finish = function (v, keep) {
+      if (keep) { PHOTO[title] = v; try { localStorage.setItem(PKEY, JSON.stringify(PHOTO)); } catch (e) {} }
+      var q = photoWait[title] || []; delete photoWait[title]; q.forEach(function (f) { f(v); });
+    };
+    fetch("https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(title.replace(/ /g, "_")))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var t = d && d.thumbnail;
+        finish(t ? { src: t.source, big: bigger(t.source, d.originalimage), page: d.content_urls && d.content_urls.desktop && d.content_urls.desktop.page, title: d.title } : null, true);
+      })
+      .catch(function () { finish(null, false); }); // offline: don't remember the failure
+  }
+  function cssUrl(u) { return "url('" + encodeURI(decodeURI(u)).replace(/'/g, "%27") + "')"; }
+  // Fill every [data-photo] image inside el once its photo arrives; Deima's own photo (data-img) wins.
+  function hydrate(el) {
+    el.querySelectorAll("img[data-photo], img[data-img]").forEach(function (img) {
+      var wrap = img.closest(".tb-ph-wrap"), own = img.getAttribute("data-img");
+      if (own) { img.src = own; if (wrap) wrap.classList.add("has"); return; }
+      photo(img.getAttribute("data-photo"), function (v) {
+        if (!img.isConnected) return;
+        if (!v) { if (wrap) wrap.classList.add("none"); return; }
+        img.onerror = function () { // some Wikimedia sizes don't exist; drop to the small thumbnail, then to the placeholder
+          if (img.getAttribute("src") !== v.src) img.src = v.src;
+          else if (wrap) { wrap.classList.remove("has"); wrap.classList.add("none"); }
+        };
+        img.src = img.getAttribute("data-size") === "big" ? v.big : v.src;
+        if (wrap) {
+          wrap.classList.add("has");
+          var c = wrap.querySelector(".tb-credit"); if (c && v.page) { c.href = v.page; c.hidden = false; }
+        }
+      });
+    });
+  }
+
+  // ---------- live map (Leaflet + map tiles); falls back to the drawn map if it can't load ----------
+  var LEAF = { state: "idle", q: [], map: null, host: null, markers: {}, route: null, ends: null, lastFocus: null };
+  var ISLAND = [[5.92, 79.65], [9.84, 81.9]];
+  function loadLeaflet(done) {
+    if (window.L && window.L.map) { done(true); return; }
+    if (LEAF.state === "failed") { done(false); return; }
+    LEAF.q.push(done);
+    if (LEAF.state === "loading") return;
+    LEAF.state = "loading";
+    var css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(css);
+    var js = document.createElement("script"); js.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    js.onload = function () { LEAF.state = "ready"; LEAF.q.splice(0).forEach(function (f) { f(true); }); };
+    js.onerror = function () { LEAF.state = "failed"; LEAF.q.splice(0).forEach(function (f) { f(false); }); };
+    document.head.appendChild(js);
+  }
+  function mountMap() {
+    var slot = $main.querySelector(".tb-mapslot"); if (!slot) return;
+    if (!LEAF.host) { LEAF.host = document.createElement("div"); LEAF.host.className = "tb-lmap"; }
+    slot.appendChild(LEAF.host);
+    loadLeaflet(function (ok) {
+      if (!slot.isConnected) return;
+      if (!ok) { slot.innerHTML = mapSVG(); return; }
+      if (!LEAF.map) initMap();
+      LEAF.map.invalidateSize();
+      updateMap();
+    });
+  }
+  function markerIcon(p) {
+    var v = PHOTO[p.wiki], s = score(p), idx = inRoute(p.id);
+    var cls = "tb-mk" + (idx >= 0 ? " in" : "") + (S.focus === p.id ? " focus" : "") + (S.interests.length && !s && idx < 0 ? " dim" : "") + (s ? " m" + Math.min(s, 3) : "");
+    return window.L.divIcon({
+      className: "tb-mk-w" + (idx >= 0 || S.focus === p.id ? " keep" : "") + (s >= 2 ? " top" : ""), iconSize: [46, 46], iconAnchor: [23, 23],
+      html: '<div class="' + cls + '"><span class="ph"' + (v ? ' style="background-image:' + cssUrl(v.src) + '"' : "") + "></span>" + (idx >= 0 ? "<b>" + (idx + 1) + "</b>" : "") + '</div><span class="tb-mk-l">' + esc(p.name) + "</span>"
+    });
+  }
+  function tipHTML(p, v) {
+    var s = score(p), idx = inRoute(p.id);
+    return '<div class="tb-tipc">' + (v ? '<img src="' + esc(v.src) + '" alt="">' : '<div class="noimg" aria-hidden="true">📷</div>') +
+      "<div><small>" + esc(p.region) + "</small><b>" + esc(p.name) + "</b><span>" + esc(p.blurb) + "</span>" +
+      "<em>" + (idx >= 0 ? "Stop " + (idx + 1) + " in your route" : s ? "●".repeat(s) + " match for you" : "") + " · Click to explore</em></div></div>";
+  }
+  function initMap() {
+    var L = window.L;
+    var m = L.map(LEAF.host, { zoomSnap: 0.25, minZoom: 7, maxZoom: 17, maxBounds: [[4.6, 78.4], [10.8, 83.2]], maxBoundsViscosity: 0.8 });
+    // Keyless tile layers for the demo. For the live site, switch to a keyed provider (e.g. MapTiler, Stadia, Mapbox).
+    var street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+    });
+    var sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 18, attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics"
+    });
+    var topo = L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+      subdomains: "abc", maxZoom: 17, attribution: 'Map &copy; <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA), &copy; OpenStreetMap contributors'
+    });
+    street.addTo(m);
+    L.control.layers({ "Map": street, "Satellite": sat, "Terrain": topo }, null, { position: "topright", collapsed: false }).addTo(m);
+    var zoomCls = function () { LEAF.host.classList.toggle("tb-z-low", m.getZoom() < 8.5); };
+    m.on("zoomend", zoomCls);
+    m.fitBounds(ISLAND, { padding: [8, 8] });
+    L.marker([D.airport.lat, D.airport.lon], { icon: L.divIcon({ className: "tb-air", html: "✈", iconSize: [28, 28], iconAnchor: [14, 14] }), keyboard: false })
+      .bindTooltip("Airport (CMB)", { direction: "left", className: "tb-tip-sm" }).addTo(m);
+    LEAF.ends = L.polyline([], { className: "tb-lroute-end", color: "#64748b", weight: 3, dashArray: "3 8", opacity: 0.9 }).addTo(m);
+    LEAF.route = L.polyline([], { className: "tb-lroute", color: "#163ead", weight: 4, dashArray: "10 10", lineCap: "round" }).addTo(m);
+    D.places.forEach(function (p) {
+      var mk = L.marker([p.lat, p.lon], { icon: markerIcon(p), title: p.name, riseOnHover: true }).addTo(m);
+      mk.on("click", function () { focusPlace(p.id, true); });
+      mk.bindTooltip(tipHTML(p, PHOTO[p.wiki]), { direction: "top", offset: [0, -26], className: "tb-tip", opacity: 1 });
+      mk.on("tooltipopen", function () { photo(p.wiki, function (v) { mk.setTooltipContent(tipHTML(p, v)); }); });
+      LEAF.markers[p.id] = mk;
+      photo(p.wiki, function (v) { if (v) mk.setIcon(markerIcon(p)); });
+    });
+    LEAF.map = m;
+    zoomCls();
+  }
+  function updateMap() {
+    if (!LEAF.map) return;
+    D.places.forEach(function (p) {
+      var mk = LEAF.markers[p.id]; mk.setIcon(markerIcon(p));
+      mk.setZIndexOffset(inRoute(p.id) >= 0 || S.focus === p.id ? 1000 : 0);
+      mk.setTooltipContent(tipHTML(p, PHOTO[p.wiki]));
+    });
+    var stops = S.route.map(function (r) { var p = place(r.id); return [p.lat, p.lon]; }), air = [D.airport.lat, D.airport.lon];
+    LEAF.route.setLatLngs(stops);
+    LEAF.ends.setLatLngs(stops.length ? [[air, stops[0]], [stops[stops.length - 1], air]] : []);
+  }
+  function focusPlace(id, fromMap) {
+    S.focus = id; save(); var keep = $main.scrollTop; render(); $main.scrollTop = keep;
+    var p = place(id);
+    if (LEAF.map && p) LEAF.map.flyTo([p.lat, p.lon], Math.max(LEAF.map.getZoom(), 9.5), { duration: 0.9 });
+    var pnl = $main.querySelector(".tb-panel");
+    if (pnl && window.innerWidth <= 1080 && fromMap) pnl.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  function fitRoute() {
+    if (!LEAF.map) return;
+    if (!S.route.length) { LEAF.map.flyToBounds(ISLAND, { padding: [8, 8], duration: 0.9 }); return; }
+    var pts = S.route.map(function (r) { var p = place(r.id); return [p.lat, p.lon]; }).concat([[D.airport.lat, D.airport.lon]]);
+    LEAF.map.flyToBounds(pts, { padding: [50, 50], maxZoom: 10, duration: 0.9 });
+  }
+
   // ---------- DOM ----------
   var font = document.createElement("link");
   font.rel = "stylesheet"; font.href = "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap";
@@ -148,6 +294,9 @@
     }).join("");
     var id = STEPS[S.step].id;
     $main.innerHTML = VIEWS[id]();
+    hidePeek();
+    if (id === "route") mountMap();
+    hydrate($main);
     renderSide();
     var last = S.step === STEPS.length - 1;
     $foot.innerHTML =
@@ -201,8 +350,9 @@
     route: function () {
       var focus = place(S.focus) || null;
       return head("Step 3 of 6", "Build your route on the map", "Tap a place to see what you can do and where you can stay, then add it to your route. Brighter rings mean a better match for you.") +
-        '<div class="tb-plan"><div class="tb-mapbox">' + mapSVG() +
-        '<div class="tb-maplegend"><span><i style="background:#85c236;opacity:.6"></i>Good match</span><span><i style="background:#163ead"></i>In your route</span><span><i style="background:#fff;border:2px solid #094f35"></i>Tap to explore</span></div></div>' +
+        '<div class="tb-plan"><div class="tb-mapbox"><div class="tb-mapslot"></div>' +
+        '<div class="tb-mapbar"><div class="tb-maplegend"><span><i class="lg-match"></i>Good match</span><span><i class="lg-route"></i>In your route</span><span>Hover for photos · click to explore</span></div>' +
+        '<div class="tb-mapbtns"><button type="button" class="tb-btn small" data-a="fitRoute">' + (S.route.length ? "Show my route" : "Whole island") + "</button></div></div></div>" +
         '<div class="tb-panel">' + (focus ? placePanel(focus) : intro()) + routeBox() + "</div></div>";
     },
 
@@ -324,7 +474,9 @@
     var months = MONTHS.map(function (n, i) { return '<span class="' + (p.good.indexOf(i + 1) >= 0 ? "good" : "") + (m === i + 1 ? " trip" : "") + '" title="' + n + '">' + n[0] + "</span>"; }).join("");
     var acts = p.activities.map(function (a, i) {
       var on = stop ? stop.acts.indexOf(a[0]) >= 0 : false, hit = S.interests.indexOf(a[1]) >= 0;
-      return '<label class="tb-opt' + (on ? " checked" : "") + '"><input type="checkbox" data-a="act" data-v="' + i + '"' + (on ? " checked" : "") + (stop ? "" : " disabled") + ">" + esc(a[0]) + (hit ? '<span class="tb-tag hit">Matches you</span>' : "") + "</label>";
+      return '<label class="tb-act' + (on ? " checked" : "") + (stop ? "" : " locked") + '" data-peek="' + esc(a[2] || "") + '" data-peek-name="' + esc(a[0]) + '">' +
+        '<span class="tb-ph-wrap tb-act-ph"><img class="tb-ph" data-photo="' + esc(a[2] || "") + '" alt="" loading="lazy"><i aria-hidden="true">' + byId(D.interests, a[1]).icon + "</i></span>" +
+        '<span class="tb-act-t"><input type="checkbox" data-a="act" data-v="' + i + '"' + (on ? " checked" : "") + (stop ? "" : " disabled") + ">" + esc(a[0]) + (hit ? '<em>Matches you</em>' : "") + "</span></label>";
     }).join("");
     var hotels;
     if (!p.hotels.length) hotels = '<div class="tb-empty">Deima will suggest hotels here that match your style (' + byId(D.styles, S.style).label.toLowerCase() + ").</div>";
@@ -332,17 +484,25 @@
       var mine = S.style === "mix" ? p.hotels : p.hotels.filter(function (h) { return h[1] === S.style; });
       var rest = S.style === "mix" ? [] : p.hotels.filter(function (h) { return h[1] !== S.style; });
       var cur = stop ? stop.hotel : "auto";
-      var opt = function (h, other) { return '<label class="tb-opt' + (other ? " other" : "") + (cur === h[0] ? " checked" : "") + '"><input type="radio" name="tb-hotel" data-a="hotel" data-v="' + esc(h[0]) + '"' + (cur === h[0] ? " checked" : "") + (stop ? "" : " disabled") + ">" + esc(h[0]) + '<span class="tb-tag">' + byId(D.styles, h[1]).label + "</span></label>"; };
+      var opt = function (h, other) {
+        var pic = h[3] ? ' data-img="' + esc(h[3]) + '"' : ' data-photo="' + esc(h[2] || "") + '"';
+        return '<label class="tb-opt tb-hotel' + (other ? " other" : "") + (cur === h[0] ? " checked" : "") + '" data-peek="' + esc(h[2] || "") + '" data-peek-img="' + esc(h[3] || "") + '" data-peek-name="' + esc(h[0]) + '">' +
+          '<input type="radio" name="tb-hotel" data-a="hotel" data-v="' + esc(h[0]) + '"' + (cur === h[0] ? " checked" : "") + (stop ? "" : " disabled") + ">" +
+          '<span class="tb-ph-wrap tb-hotel-ph"><img class="tb-ph"' + pic + ' alt="" loading="lazy"><i aria-hidden="true">' + esc(h[0].charAt(0)) + "</i></span>" +
+          '<span class="tb-hotel-n">' + esc(h[0]) + '</span><span class="tb-tag">' + byId(D.styles, h[1]).label + "</span></label>";
+      };
       hotels = '<label class="tb-opt' + (cur === "auto" ? " checked" : "") + '"><input type="radio" name="tb-hotel" data-a="hotel" data-v="auto"' + (cur === "auto" ? " checked" : "") + (stop ? "" : " disabled") + ">Let Deima choose the best fit</label>" +
         mine.map(function (h) { return opt(h, false); }).join("") + rest.map(function (h) { return opt(h, true); }).join("");
     }
     return '<div class="tb-place">' +
+      '<div class="tb-hero tb-ph-wrap"><img class="tb-ph" data-photo="' + esc(p.wiki) + '" data-size="big" alt="' + esc(p.name) + '"><span class="tb-hero-fade"></span>' +
+      '<a class="tb-credit" target="_blank" rel="noopener" hidden>Photo: Wikipedia</a></div>' +
       '<div class="tb-place-h"><div><small>' + esc(p.region) + "</small><h3>" + esc(p.name) + "</h3></div>" +
       (stop ? '<button type="button" class="tb-btn small" data-a="remove" data-v="' + p.id + '">Remove</button>' : '<button type="button" class="tb-btn small primary" data-a="add" data-v="' + p.id + '">+ Add to route</button>') + "</div>" +
       "<p>" + esc(p.blurb) + "</p>" +
       '<div class="tb-tags">' + p.tags.map(function (t) { var it = byId(D.interests, t); return '<span class="tb-tag' + (S.interests.indexOf(t) >= 0 ? " hit" : "") + '">' + it.icon + " " + it.label + "</span>"; }).join("") + "</div>" +
       '<div><div class="tb-sub">Best months</div><div class="tb-months">' + months + "</div>" + (m && p.good.indexOf(m) < 0 ? '<p class="tb-hint warn" style="margin-top:8px">' + MONTHS[m - 1] + " isn't the best month here. Deima can suggest an alternative.</p>" : "") + "</div>" +
-      '<div><div class="tb-sub">Things to do' + (stop ? "" : " · add to route to choose") + '</div><div class="tb-list">' + acts + "</div></div>" +
+      '<div><div class="tb-sub">Things to do' + (stop ? "" : " · add to route to choose") + '</div><div class="tb-acts">' + acts + "</div></div>" +
       '<div><div class="tb-sub">Where to stay' + (stop ? "" : " · add to route to choose") + '</div><div class="tb-list">' + hotels + "</div></div>" +
       "</div>";
   }
@@ -484,7 +644,8 @@
       case "pace": S.pace = v; break;
       case "meal": S.meal = v; break;
       case "contact": S.contact = v; break;
-      case "focus": S.focus = v; render(); var pnl = $main.querySelector(".tb-panel"); if (pnl && window.innerWidth <= 1080) pnl.scrollIntoView({ behavior: "smooth", block: "start" }); return;
+      case "focus": focusPlace(v, true); return;
+      case "fitRoute": fitRoute(); return;
       case "add":
         if (inRoute(v) < 0) { var left = S.nights - plannedNights(); S.route.push({ id: v, nights: Math.max(1, Math.min(paceNights(), left || 1)), hotel: "auto", acts: place(v).activities.filter(function (x) { return S.interests.indexOf(x[1]) >= 0; }).map(function (x) { return x[0]; }) }); }
         break;
@@ -509,6 +670,41 @@
     }
     errorMsg = ""; save(); render(); $main.scrollTop = keepScroll;
   });
+
+  // ---------- photo preview on hover / focus ----------
+  var peek = document.createElement("div");
+  peek.className = "tb-peek"; peek.hidden = true; peek.setAttribute("aria-hidden", "true");
+  root.appendChild(peek);
+  var peekFor = null;
+  function hidePeek() { peek.hidden = true; peekFor = null; }
+  function showPeek(el) {
+    if (peekFor === el) return; peekFor = el;
+    var name = el.getAttribute("data-peek-name"), own = el.getAttribute("data-peek-img"), title = el.getAttribute("data-peek");
+    var draw = function (src, credit) {
+      if (peekFor !== el) return;
+      var none = el.classList.contains("tb-hotel") ? "Photos of this hotel will come from Deima's partner library." : "Loading photo…";
+      peek.innerHTML = (src ? '<img src="' + esc(src) + '" alt="">' : '<div class="noimg">📷<span>' + none + "</span></div>") +
+        "<div><b>" + esc(name) + "</b>" + (credit ? "<small>Photo: Wikipedia / Wikimedia Commons</small>" : "") + "</div>";
+      peek.hidden = false;
+      var r = el.getBoundingClientRect(), w = Math.min(340, window.innerWidth - 24), x = r.left - w - 14;
+      if (x < 12) x = Math.min(window.innerWidth - w - 12, r.right + 14);
+      if (x + w > window.innerWidth - 12) x = Math.max(12, (window.innerWidth - w) / 2);
+      peek.style.width = w + "px"; peek.style.left = x + "px";
+      var h = peek.offsetHeight, y = Math.max(12, Math.min(window.innerHeight - h - 12, r.top + r.height / 2 - h / 2));
+      peek.style.top = y + "px";
+    };
+    if (own) { draw(own, false); return; }
+    var drawPhoto = function (v) {
+      draw(v ? v.big : null, !!v);
+      var im = peek.querySelector("img"); if (im && v) im.onerror = function () { if (im.getAttribute("src") !== v.src) im.src = v.src; };
+    };
+    drawPhoto(PHOTO[title] || null);
+    photo(title, drawPhoto);
+  }
+  var canHover = window.matchMedia && window.matchMedia("(hover: hover)").matches;
+  root.addEventListener("mouseover", function (e) { if (!canHover) return; var el = e.target.closest("[data-peek]"); if (el) showPeek(el); else if (!e.target.closest(".tb-peek")) hidePeek(); });
+  root.addEventListener("focusin", function (e) { var el = e.target.closest && e.target.closest("[data-peek]"); if (el && canHover) showPeek(el); else hidePeek(); });
+  $main.addEventListener("scroll", hidePeek, { passive: true });
 
   root.addEventListener("keydown", function (e) {
     var g = e.target.closest && e.target.closest("g[data-a]");
