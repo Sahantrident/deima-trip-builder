@@ -29,10 +29,9 @@
   function P(n, one, many, vars) { var v = vars || {}; v.n = n; return T(n === 1 ? one : many, v); }
   function list(a) { return a.join(T(", ")); }
   function locale() { for (var i = 0; i < LANGS.length; i++) if (LANGS[i].id === S.lang) return LANGS[i].locale; return "en-GB"; }
-  function startLang() {
-    var q = (location.search.match(/[?&]lang=(\w+)/) || [])[1], nav = (navigator.language || "en").slice(0, 2);
-    var pick = q || nav;
-    return pick === "ja" || pick === "ko" ? pick : "en";
+  function startLang() { // English unless the link asks for ?lang=ja or ?lang=ko
+    var q = (location.search.match(/[?&]lang=(\w+)/) || [])[1];
+    return q === "ja" || q === "ko" ? q : "en";
   }
   function monthShort(i) { try { return new Intl.DateTimeFormat(locale(), { month: "short" }).format(new Date(2026, i, 1)); } catch (e) { return String(i + 1); } }
   function monthTiny(i) { return S.lang === "en" ? monthShort(i).charAt(0) : String(i + 1); }
@@ -51,6 +50,7 @@
   }
   var S = null; S = fresh();
   try { var saved = JSON.parse(localStorage.getItem(KEY) || "null"); if (saved && typeof saved === "object") S = Object.assign(fresh(), saved); } catch (e) {}
+  if (/[?&]lang=(ja|ko|en)\b/.test(location.search)) S.lang = startLang(); // a language link wins over the saved choice
   var saveTimer;
   function save() { clearTimeout(saveTimer); saveTimer = setTimeout(function () { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }, 200); }
 
