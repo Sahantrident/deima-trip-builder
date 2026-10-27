@@ -80,6 +80,7 @@ window.DEIMA_TRIP_DATA = {
     { name: "Australia", dial: "+61", cur: "AUD" },
     { name: "China", dial: "+86", cur: "CNY" },
     { name: "Japan", dial: "+81", cur: "JPY" },
+    { name: "South Korea", dial: "+82", cur: "KRW" },
     { name: "Russia", dial: "+7", cur: "RUB" },
     { name: "United Arab Emirates", dial: "+971", cur: "AED" },
     { name: "Saudi Arabia", dial: "+966", cur: "SAR" },

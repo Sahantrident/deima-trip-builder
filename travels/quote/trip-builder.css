@@ -351,3 +351,25 @@
 .tb .tb-steps button.is-now, .tb .tb-steps button.is-now:hover, .tb .tb-steps button.is-now:focus { background-color: var(--tb-blue-soft); color: var(--tb-ink); }
 .tb .tb-top-matches button:hover, .tb .tb-top-matches button:focus { background-color: var(--tb-white); border-color: var(--tb-blue); color: var(--tb-ink); }
 .tb .tb-stop .nm button:hover, .tb .tb-stop .nm button:focus { background-color: transparent; color: var(--tb-blue); border-color: transparent; }
+
+/* ---------- languages ---------- */
+.tb[lang="ja"], .tb-launch[lang="ja"] { --tb-font: "Noto Sans JP", "Plus Jakarta Sans", "Hiragino Sans", "Yu Gothic", Meiryo, sans-serif; }
+.tb[lang="ko"], .tb-launch[lang="ko"] { --tb-font: "Noto Sans KR", "Plus Jakarta Sans", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+.tb-launch[lang="ja"], .tb-launch[lang="ko"] { font-family: var(--tb-font); }
+.tb[lang="ja"] .tb-head h2, .tb[lang="ko"] .tb-head h2 { letter-spacing: 0; line-height: 1.35; }
+.tb[lang="ja"] .tb-eyebrow, .tb[lang="ko"] .tb-eyebrow { letter-spacing: .04em; }
+.tb[lang="ko"] { word-break: keep-all; }
+.tb[lang="ja"] { line-break: strict; }
+.tb-langs { display: flex; align-items: center; flex: none; }
+.tb-lang-btns { display: flex; background: var(--tb-bg); border-radius: 999px; padding: 3px; gap: 2px; }
+.tb .tb-lang-btns button { border: 0; border-radius: 999px; padding: 6px 11px; font-size: 13px; font-weight: 700; color: var(--tb-slate); }
+.tb .tb-lang-btns button:hover, .tb .tb-lang-btns button:focus { background-color: var(--tb-white); color: var(--tb-ink); }
+.tb .tb-lang-btns button[aria-pressed="true"], .tb .tb-lang-btns button[aria-pressed="true"]:hover, .tb .tb-lang-btns button[aria-pressed="true"]:focus { background-color: var(--tb-white); color: var(--tb-blue); box-shadow: 0 1px 4px rgba(15,23,42,.12); }
+.tb .tb-lang-btns button[lang="ja"] { font-family: "Noto Sans JP", "Hiragino Sans", sans-serif; }
+.tb .tb-lang-btns button[lang="ko"] { font-family: "Noto Sans KR", "Apple SD Gothic Neo", sans-serif; }
+.tb .tb-lang-sel { display: none; width: auto; padding: 7px 10px; border-radius: 999px; font-size: 13px; font-weight: 700; }
+@media (max-width: 900px) {
+  .tb-lang-btns { display: none; }
+  .tb .tb-lang-sel { display: block; }
+}
+@media (max-width: 1280px) { .tb .tb-steps button:not(.is-now) span { display: none; } } /* room for the language switch */
